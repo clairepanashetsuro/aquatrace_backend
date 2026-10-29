@@ -111,3 +111,8 @@ without attempting to create an app. PR checks and local development still work.
 The Heroku app must support Git-based deployment (as used by the class project).
 For a Heroku generation that requires container deployment, adapt `deploy.yml`
 before enabling deployments.
+
+## AquaTrace API
+
+The AquaTrace backend provides API endpoints for water-quality monitoring.
+The `/health` endpoint can be used to verify that the service is running.
