@@ -1,0 +1,89 @@
+name: Deploy to Heroku
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: Verify main
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, classroom-ci]
+    environment: production
+    steps:
+      - name: Check Heroku configuration
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_EMAIL: ${{ secrets.HEROKU_EMAIL }}
+          HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
+          HEROKU_APP_URL: ${{ vars.HEROKU_APP_URL }}
+        run: |
+          for name in HEROKU_API_KEY HEROKU_EMAIL HEROKU_APP_NAME HEROKU_APP_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Configure $name in the production environment before deploying."
+              exit 1
+            fi
+          done
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - name: Deploy to Heroku
+        # Uses the Heroku Platform API directly, so the runner needs no git or Heroku CLI.
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
+        run: |
+          set -euo pipefail
+          api() {
+            curl --fail --silent --show-error \
+              -H "Accept: application/vnd.heroku+json; version=3" \
+              -H "Authorization: Bearer $HEROKU_API_KEY" "$@"
+          }
+          field() { python -c "import json, sys; print(json.load(sys.stdin)$1)"; }
+
+          tar --exclude=.git -czf "$RUNNER_TEMP/source.tgz" .
+
+          source=$(api -X POST https://api.heroku.com/sources)
+          curl --fail --silent --show-error -X PUT -H "Content-Type:" \
+            --data-binary @"$RUNNER_TEMP/source.tgz" \
+            "$(echo "$source" | field "['source_blob']['put_url']")"
+
+          payload=$(echo "$source" | python -c "import json, os, sys; print(json.dumps({'source_blob': {'url': json.load(sys.stdin)['source_blob']['get_url'], 'version': os.environ['GITHUB_SHA']}}))")
+          build=$(api -X POST -H "Content-Type: application/json" -d "$payload" \
+            "https://api.heroku.com/apps/$HEROKU_APP_NAME/builds")
+          build_id=$(echo "$build" | field "['id']")
+
+          # Stream the build log into the job output.
+          curl --silent --show-error --location "$(echo "$build" | field "['output_stream_url']")" || true
+
+          while status=$(api "https://api.heroku.com/apps/$HEROKU_APP_NAME/builds/$build_id" | field "['status']"); [ "$status" = "pending" ]; do
+            sleep 5
+          done
+          echo "Heroku build $build_id: $status"
+          [ "$status" = "succeeded" ]
+      - name: Verify deployment
+        env:
+          HEROKU_APP_URL: ${{ vars.HEROKU_APP_URL }}
+        run: |
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 10 --max-time 30 \
+            "${HEROKU_APP_URL%/}/health"
