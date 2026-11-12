@@ -20,6 +20,7 @@ class IncidentRepository:
         return (
             selectinload(Incident.assigned_user),
             selectinload(Incident.resolved_user),
+            selectinload(Incident.alert).selectinload(Alert.device),
         )
 
     def get(self, incident_id: UUID) -> Optional[Incident]:

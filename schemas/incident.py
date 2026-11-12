@@ -4,7 +4,36 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from models.alert import AlertStatus, AlertType, SeverityLevel
 from models.incident import IncidentPriority, IncidentStatus
+
+
+class IncidentDeviceSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    device_id: UUID
+    serial_number: str
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    description: Optional[str] = None
+
+
+class IncidentAlertSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    alert_id: UUID
+    device_id: UUID
+    reading_id: Optional[UUID] = None
+    alert_type: AlertType
+    parameter: Optional[str] = None
+    observed_value: Optional[float] = None
+    threshold_value: Optional[float] = None
+    severity: SeverityLevel
+    message: str
+    status: AlertStatus
+    created_at: datetime
+    device: IncidentDeviceSummary
 
 
 class IncidentCreate(BaseModel):
@@ -49,6 +78,7 @@ class IncidentRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     closed_at: Optional[datetime] = None
+    alert: Optional[IncidentAlertSummary] = None
     assignee: Optional[UserSummary] = Field(
         default=None, validation_alias="assigned_user"
     )

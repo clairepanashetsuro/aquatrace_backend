@@ -13,6 +13,7 @@ from core.error import (
     UnauthenticatedError,
     register_exception_handlers,
 )
+from models.alert import AlertStatus, AlertType, SeverityLevel
 from models.incident import IncidentPriority as P
 from models.incident import IncidentStatus as S
 from routers import incident as router_module
@@ -421,6 +422,90 @@ def test_router_full_flow(client, world):
         client.get("/incidents?status=closed", headers=h(world.wqo)).json()["total"]
         == 1
     )
+
+
+def test_field_officer_incident_includes_alert_device_and_location(client, world):
+    incident = new_incident(world)
+    now = datetime.now(timezone.utc)
+    device_id = uuid4()
+    incident.alert = NS(
+        alert_id=incident.alert_id,
+        device_id=device_id,
+        reading_id=uuid4(),
+        alert_type=AlertType.THRESHOLD_BREACH,
+        parameter="ph",
+        observed_value=9.2,
+        threshold_value=8.5,
+        severity=SeverityLevel.CRITICAL,
+        message="pH is above the permitted threshold",
+        status=AlertStatus.TRIGGERED,
+        created_at=now,
+        device=NS(
+            device_id=device_id,
+            serial_number="CY-AT-K1235",
+            address="Ngiri Road, Karen, Nairobi, Kenya",
+            latitude=-1.36389,
+            longitude=36.73648,
+            description="Water Quality Monitoring Node",
+        ),
+    )
+
+    detail = client.get(
+        f"/incidents/{incident.incident_id}",
+        headers=h(world.field),
+    )
+    assert detail.status_code == 200
+    detail_alert = detail.json()["alert"]
+    assert detail_alert["device_id"] == str(device_id)
+    assert detail_alert["device"]["serial_number"] == "CY-AT-K1235"
+    assert detail_alert["device"]["address"] == "Ngiri Road, Karen, Nairobi, Kenya"
+    assert detail_alert["device"]["latitude"] == -1.36389
+    assert detail_alert["device"]["longitude"] == 36.73648
+    assert detail_alert["parameter"] == "ph"
+    assert detail_alert["severity"] == "critical"
+
+    listing = client.get("/incidents", headers=h(world.field))
+    assert listing.status_code == 200
+    listed_alert = listing.json()["items"][0]["alert"]
+    assert listed_alert["device"]["device_id"] == str(device_id)
+    assert listed_alert["device"]["serial_number"] == "CY-AT-K1235"
+
+
+def test_field_officer_incident_allows_missing_device_location(client, world):
+    incident = new_incident(world)
+    device_id = uuid4()
+    incident.alert = NS(
+        alert_id=incident.alert_id,
+        device_id=device_id,
+        reading_id=None,
+        alert_type=AlertType.DEVICE_OFFLINE,
+        parameter=None,
+        observed_value=None,
+        threshold_value=None,
+        severity=SeverityLevel.WARNING,
+        message="Device is offline",
+        status=AlertStatus.TRIGGERED,
+        created_at=datetime.now(timezone.utc),
+        device=NS(
+            device_id=device_id,
+            serial_number="CY-AT-K2345",
+            address=None,
+            latitude=None,
+            longitude=None,
+            description="Monitoring device at Kibera water station",
+        ),
+    )
+
+    response = client.get(
+        f"/incidents/{incident.incident_id}",
+        headers=h(world.field),
+    )
+    assert response.status_code == 200
+    device = response.json()["alert"]["device"]
+    assert device["serial_number"] == "CY-AT-K2345"
+    assert device["address"] is None
+    assert device["latitude"] is None
+    assert device["longitude"] is None
 
 
 def test_router_denies_administrator_operational_access(client, world):
