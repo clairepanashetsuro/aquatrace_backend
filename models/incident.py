@@ -47,12 +47,20 @@ class Incident(Base):
     visited_at = Column(DateTime(timezone=True), nullable=True)
 
     status = Column(
-        Enum(IncidentStatus, name="incident_status"),
+        Enum(
+            IncidentStatus,
+            name="incident_status",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=IncidentStatus.OPEN,
     )
     priority = Column(
-        Enum(IncidentPriority, name="incident_priority"),
+        Enum(
+            IncidentPriority,
+            name="incident_priority",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
     )
 
