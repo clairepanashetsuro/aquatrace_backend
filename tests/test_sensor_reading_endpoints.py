@@ -1,11 +1,14 @@
 import pytest
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 from main import app
 from database import get_db
 from models.sensor_reading import WqiStatus, SensorStatus
+from schemas.sensor_reading import SensorReadingCreate
 import routers.sensor_reading_router as sensor_router
 
 client = TestClient(app)
@@ -53,7 +56,7 @@ def valid_payload():
 
 
 def test_create_reading_success(monkeypatch, sample_reading, valid_payload):
-    def fake_ingest(db, payload):
+    def fake_ingest(db, payload, background_tasks=None):
         return sample_reading
 
     monkeypatch.setattr(sensor_router, "ingest_sensor_reading", fake_ingest)
@@ -66,7 +69,7 @@ def test_create_reading_success(monkeypatch, sample_reading, valid_payload):
 
 
 def test_create_reading_handles_value_error(monkeypatch, valid_payload):
-    def fake_ingest(db, payload):
+    def fake_ingest(db, payload, background_tasks=None):
         raise HTTPException(status_code=422, detail="Invalid sensor data calculation.")
 
     monkeypatch.setattr(sensor_router, "ingest_sensor_reading", fake_ingest)
@@ -237,6 +240,9 @@ def test_wqi_calculation_and_deduplication_logic(monkeypatch, valid_payload):
         def refresh(self, obj):
             pass
 
+        def get(self, model, ident):
+            return SimpleNamespace(device_id=ident)
+
     class DummyReading:
         reading_id = uuid4()
         device_id = valid_payload["device_id"]
@@ -255,14 +261,18 @@ def test_wqi_calculation_and_deduplication_logic(monkeypatch, valid_payload):
     monkeypatch.setattr(service, "create_reading", lambda db, data: DummyReading())
 
     from schemas.sensor_reading import SensorReadingCreate
-     
+
     monkeypatch.setattr(service, "create_reading", lambda db, data: DummyReading())
     monkeypatch.setattr(
-    service.alert_service,
-    "process_new_reading",
-    lambda db, reading_id: None,
-)
+        service.alert_service,
+        "process_new_reading",
+        lambda db, reading_id: None,
+    )
     payload_obj = SensorReadingCreate(**valid_payload)
+    from services import alert_service as alert_svc
+
+    monkeypatch.setattr(alert_svc, "process_new_reading", lambda db, reading_id: None)
+
     result = service.ingest_sensor_reading(DummyDB(), payload_obj)
 
     assert result.wqi_score == 100.0
@@ -303,11 +313,12 @@ def test_buffered_logic_when_recorded_at_is_old(monkeypatch):
         def refresh(self, obj):
             pass
 
+        def get(self, model, ident):
+            return SimpleNamespace(device_id=ident)
+
     class DummyReading:
         reading_id = uuid4()
         is_buffered = True
-        
-        
 
     def fake_create(db, data):
         assert data["is_buffered"] is True, (
@@ -318,7 +329,7 @@ def test_buffered_logic_when_recorded_at_is_old(monkeypatch):
     monkeypatch.setattr(
         service, "get_reading_by_device_and_message", lambda db, dev, msg: None
     )
-    
+
     monkeypatch.setattr(
         service,
         "fetch_active_weights",
@@ -330,17 +341,236 @@ def test_buffered_logic_when_recorded_at_is_old(monkeypatch):
         },
     )
 
-
     monkeypatch.setattr(service, "create_reading", fake_create)
 
     monkeypatch.setattr(
-    service.alert_service,
-    "process_new_reading",
-    lambda db, reading_id: None,
-)
+        service.alert_service,
+        "process_new_reading",
+        lambda db, reading_id: None,
+    )
 
+    from services import alert_service as alert_svc
 
+    monkeypatch.setattr(alert_svc, "process_new_reading", lambda db, reading_id: None)
 
     result = service.ingest_sensor_reading(DummyDB(), payload_obj)
 
     assert result.is_buffered is True
+
+
+class FakeSession:
+    def commit(self):
+        pass
+
+    def refresh(self, obj):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def serial_payload(base, serial="SN-0001"):
+    """Same payload, identified by serial number instead of device_id."""
+    payload = {k: v for k, v in base.items() if k != "device_id"}
+    payload["serial_number"] = serial
+    return payload
+
+
+@pytest.fixture
+def ingest_stubs(monkeypatch):
+    """Stubs everything in ingest_sensor_reading except the device lookup."""
+    from services import sensor_reading_service as service
+    from services import alert_service as alert_svc
+
+    monkeypatch.setattr(service, "fetch_active_weights", lambda db: {})
+    monkeypatch.setattr(
+        service, "get_reading_by_device_and_message", lambda db, dev, msg: None
+    )
+    monkeypatch.setattr(alert_svc, "process_new_reading", lambda db, reading_id: None)
+    return service
+
+
+def test_create_reading_accepts_serial_number(
+    monkeypatch, sample_reading, valid_payload
+):
+    received = {}
+
+    def fake_ingest(db, payload, background_tasks=None):
+        received["serial_number"] = payload.serial_number
+        received["device_id"] = payload.device_id
+        return sample_reading
+
+    monkeypatch.setattr(sensor_router, "ingest_sensor_reading", fake_ingest)
+
+    response = client.post("/sensor-readings/", json=serial_payload(valid_payload))
+
+    assert response.status_code == 201
+    assert received == {"serial_number": "SN-0001", "device_id": None}
+
+
+def test_create_reading_rejects_both_identifiers(valid_payload):
+    payload = {**valid_payload, "serial_number": "SN-0001"}
+
+    response = client.post("/sensor-readings/", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_create_reading_rejects_no_identifier(valid_payload):
+    payload = {k: v for k, v in valid_payload.items() if k != "device_id"}
+
+    response = client.post("/sensor-readings/", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_ingest_by_serial_number_saves_with_the_devices_uuid(
+    monkeypatch, ingest_stubs, valid_payload
+):
+    service = ingest_stubs
+    device_uuid = uuid4()
+    monkeypatch.setattr(
+        service.DeviceRepository,
+        "get_by_serial",
+        lambda self, serial: (
+            SimpleNamespace(device_id=device_uuid) if serial == "SN-0001" else None
+        ),
+    )
+    saved = {}
+
+    def fake_create(db, data):
+        saved.update(data)
+        return SimpleNamespace(reading_id=uuid4())
+
+    monkeypatch.setattr(service, "create_reading", fake_create)
+    payload = SensorReadingCreate(**serial_payload(valid_payload, "SN-0001"))
+
+    service.ingest_sensor_reading(FakeSession(), payload)
+
+    assert saved["device_id"] == device_uuid
+
+
+def test_ingest_unknown_serial_returns_404_and_saves_nothing(
+    monkeypatch, ingest_stubs, valid_payload
+):
+    service = ingest_stubs
+    monkeypatch.setattr(
+        service.DeviceRepository, "get_by_serial", lambda self, serial: None
+    )
+    monkeypatch.setattr(
+        service, "create_reading", lambda db, data: pytest.fail("must not save")
+    )
+    payload = SensorReadingCreate(**serial_payload(valid_payload, "NOPE"))
+
+    with pytest.raises(HTTPException) as exc:
+        service.ingest_sensor_reading(FakeSession(), payload)
+
+    assert exc.value.status_code == 404
+
+
+def test_ingest_unknown_device_id_returns_404(monkeypatch, ingest_stubs, valid_payload):
+    service = ingest_stubs
+    monkeypatch.setattr(
+        service.DeviceRepository, "get_by_id", lambda self, device_id: None
+    )
+    monkeypatch.setattr(
+        service, "create_reading", lambda db, data: pytest.fail("must not save")
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.ingest_sensor_reading(
+            FakeSession(), SensorReadingCreate(**valid_payload)
+        )
+
+    assert exc.value.status_code == 404
+
+
+def test_ingest_malformed_device_id_returns_404(
+    monkeypatch, ingest_stubs, valid_payload
+):
+    service = ingest_stubs
+    monkeypatch.setattr(
+        service.DeviceRepository,
+        "get_by_id",
+        lambda self, device_id: pytest.fail("must not look up a malformed id"),
+    )
+    payload = SensorReadingCreate(**{**valid_payload, "device_id": "not-a-uuid"})
+
+    with pytest.raises(HTTPException) as exc:
+        service.ingest_sensor_reading(FakeSession(), payload)
+
+    assert exc.value.status_code == 404
+
+
+def test_duplicate_message_returns_existing_reading_without_saving(
+    monkeypatch, ingest_stubs, valid_payload
+):
+    service = ingest_stubs
+    existing = SimpleNamespace(reading_id=uuid4())
+    monkeypatch.setattr(
+        service.DeviceRepository,
+        "get_by_id",
+        lambda self, device_id: SimpleNamespace(device_id=device_id),
+    )
+    monkeypatch.setattr(
+        service, "get_reading_by_device_and_message", lambda db, dev, msg: existing
+    )
+    monkeypatch.setattr(
+        service, "create_reading", lambda db, data: pytest.fail("must not save twice")
+    )
+
+    result = service.ingest_sensor_reading(
+        FakeSession(), SensorReadingCreate(**valid_payload)
+    )
+
+    assert result is existing
+
+
+def test_concurrent_duplicate_returns_existing_reading(
+    monkeypatch, ingest_stubs, valid_payload
+):
+    service = ingest_stubs
+    existing = SimpleNamespace(reading_id=uuid4())
+    lookups = iter([None, existing])
+    monkeypatch.setattr(
+        service.DeviceRepository,
+        "get_by_id",
+        lambda self, device_id: SimpleNamespace(device_id=device_id),
+    )
+    monkeypatch.setattr(
+        service, "get_reading_by_device_and_message", lambda db, dev, msg: next(lookups)
+    )
+
+    def colliding_create(db, data):
+        raise IntegrityError("INSERT", {}, Exception("unique violation"))
+
+    monkeypatch.setattr(service, "create_reading", colliding_create)
+
+    result = service.ingest_sensor_reading(
+        FakeSession(), SensorReadingCreate(**valid_payload)
+    )
+
+    assert result is existing
+
+
+def test_integrity_error_without_existing_reading_returns_404(
+    monkeypatch, ingest_stubs, valid_payload
+):
+    service = ingest_stubs
+    monkeypatch.setattr(
+        service.DeviceRepository,
+        "get_by_id",
+        lambda self, device_id: SimpleNamespace(device_id=device_id),
+    )
+
+    def failing_create(db, data):
+        raise IntegrityError("INSERT", {}, Exception("foreign key violation"))
+
+    monkeypatch.setattr(service, "create_reading", failing_create)
+
+    with pytest.raises(HTTPException) as exc:
+        service.ingest_sensor_reading(
+            FakeSession(), SensorReadingCreate(**valid_payload)
+        )
+
+    assert exc.value.status_code == 404

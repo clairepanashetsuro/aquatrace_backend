@@ -745,3 +745,138 @@ def test_update_user_rejects_duplicate_email_with_different_case(
     )
 
     assert response.status_code == 409
+
+
+def test_wqo_can_list_active_field_officers(client, db_session):
+    wqo_email = "wqo.field-list@example.com"
+    create_user(
+        db_session,
+        email=wqo_email,
+        role=UserRole.WATER_QUALITY_OFFICER,
+        password=USER_PASSWORD,
+    )
+    active_one = create_user(
+        db_session,
+        email="active.officer.one@example.com",
+        role=UserRole.FIELD_OFFICER,
+        password=USER_PASSWORD,
+    )
+    active_two = create_user(
+        db_session,
+        email="active.officer.two@example.com",
+        role=UserRole.FIELD_OFFICER,
+        password=USER_PASSWORD,
+    )
+    create_user(
+        db_session,
+        email="inactive.officer@example.com",
+        role=UserRole.FIELD_OFFICER,
+        status=UserStatus.INACTIVE,
+        password=USER_PASSWORD,
+    )
+    create_user(
+        db_session,
+        email="another.wqo@example.com",
+        role=UserRole.WATER_QUALITY_OFFICER,
+        password=USER_PASSWORD,
+    )
+
+    response = client.get(
+        "/users/field-officers",
+        headers=auth_headers(client, wqo_email, USER_PASSWORD),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert {item["user_id"] for item in data["items"]} == {
+        str(active_one.user_id),
+        str(active_two.user_id),
+    }
+    for item in data["items"]:
+        assert set(item) == {"user_id", "first_name", "last_name"}
+
+
+def test_field_officer_and_admin_cannot_list_field_officers(client, db_session):
+    create_user(
+        db_session,
+        email="list-test.admin@example.com",
+        role=UserRole.ADMIN,
+        password=USER_PASSWORD,
+    )
+    create_user(
+        db_session,
+        email="list-test.officer@example.com",
+        role=UserRole.FIELD_OFFICER,
+        password=USER_PASSWORD,
+    )
+
+    for email in (
+        "list-test.admin@example.com",
+        "list-test.officer@example.com",
+    ):
+        response = client.get(
+            "/users/field-officers",
+            headers=auth_headers(client, email, USER_PASSWORD),
+        )
+        assert response.status_code == 403
+
+
+def test_field_officer_list_pagination(client, db_session):
+    wqo_email = "wqo.pagination@example.com"
+    create_user(
+        db_session,
+        email=wqo_email,
+        role=UserRole.WATER_QUALITY_OFFICER,
+        password=USER_PASSWORD,
+    )
+    create_user(
+        db_session,
+        email="page.officer.one@example.com",
+        role=UserRole.FIELD_OFFICER,
+        password=USER_PASSWORD,
+    )
+    create_user(
+        db_session,
+        email="page.officer.two@example.com",
+        role=UserRole.FIELD_OFFICER,
+        password=USER_PASSWORD,
+    )
+    headers = auth_headers(client, wqo_email, USER_PASSWORD)
+
+    first = client.get(
+        "/users/field-officers?limit=1&offset=0",
+        headers=headers,
+    )
+    second = client.get(
+        "/users/field-officers?limit=1&offset=1",
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["total"] == 2
+    assert second.json()["total"] == 2
+    assert first.json()["limit"] == 1
+    assert second.json()["offset"] == 1
+    assert len(first.json()["items"]) == 1
+    assert len(second.json()["items"]) == 1
+    assert first.json()["items"][0]["user_id"] != second.json()["items"][0]["user_id"]
+
+
+def test_field_officer_list_rejects_invalid_pagination(client, db_session):
+    wqo_email = "wqo.invalid-page@example.com"
+    create_user(
+        db_session,
+        email=wqo_email,
+        role=UserRole.WATER_QUALITY_OFFICER,
+        password=USER_PASSWORD,
+    )
+    headers = auth_headers(client, wqo_email, USER_PASSWORD)
+
+    response = client.get(
+        "/users/field-officers?limit=0",
+        headers=headers,
+    )
+
+    assert response.status_code == 422

@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
+
 from database import get_db
 from schemas.sensor_reading import SensorReadingCreate, SensorReadingResponse
 from services.sensor_reading_service import (
-    list_sensor_readings,
     find_sensor_reading,
+    ingest_sensor_reading,
     list_latest_readings_per_device,
     list_readings_by_device,
-    ingest_sensor_reading,
+    list_sensor_readings,
 )
 
 router = APIRouter(
@@ -21,14 +22,19 @@ router = APIRouter(
 )
 def create_sensor_reading(
     payload: SensorReadingCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    return ingest_sensor_reading(db=db, payload=payload)
+    return ingest_sensor_reading(
+        db=db,
+        payload=payload,
+        background_tasks=background_tasks,
+    )
 
 
 @router.get("/", response_model=list[SensorReadingResponse])
 def read_sensor_readings(
-    device_id: str | None = Query(default=None),  # <--- Changed to str
+    device_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
@@ -48,7 +54,7 @@ def read_latest_sensor_readings(
 
 @router.get("/device/{device_id}", response_model=list[SensorReadingResponse])
 def read_sensor_readings_by_device(
-    device_id: str,  # <--- Changed to str
+    device_id: str,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
@@ -61,7 +67,7 @@ def read_sensor_readings_by_device(
 
 @router.get("/{reading_id}", response_model=SensorReadingResponse)
 def read_sensor_reading(
-    reading_id: str,  # <--- Changed to str
+    reading_id: str,
     db: Session = Depends(get_db),
 ):
     return find_sensor_reading(

@@ -1,4 +1,3 @@
-
 from enum import Enum as PyEnum
 from uuid import uuid4
 
@@ -41,7 +40,9 @@ class SensorReading(Base):
     __tablename__ = "sensor_readings"
     __table_args__ = (
         UniqueConstraint(
-            "device_id", "message_number", name="uq_reading_device_message"
+            "device_id",
+            "message_number",
+            name="uq_reading_device_message",
         ),
         CheckConstraint("ph BETWEEN 0 AND 14", name="ck_sensor_readings_ph"),
     )
@@ -81,7 +82,9 @@ class SensorReading(Base):
     recorded_at = Column(DateTime(timezone=True), nullable=False, index=True)
 
     created_at = Column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
     )
 
     device = relationship("Device", back_populates="sensor_readings")

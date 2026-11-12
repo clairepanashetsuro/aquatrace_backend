@@ -19,9 +19,8 @@ def get_role_name(role) -> str:
 
 MAX_LIMIT = 100
 MAX_NOTE_LENGTH = 5000
-MANAGER_ROLES = {"water_quality_officer", "admin"}
+MANAGER_ROLES = {"water_quality_officer"}
 FIELD_ROLE = "field_officer"
-ADMIN_ROLE = "admin"
 
 
 def _is_active(user) -> bool:
@@ -44,15 +43,17 @@ class IncidentService:
     def _role(self, user) -> str:
         return get_role_name(user.role)
 
-    def _require_manager(self, user, action: str) -> None:
-        if self._role(user) not in MANAGER_ROLES:
+    def _require_operational_access(self, user) -> None:
+        if self._role(user) not in MANAGER_ROLES | {FIELD_ROLE}:
             raise PermissionDeniedError(
-                f"Only a Water Quality Officer or Admin can {action}."
+                "Only Water Quality Officers and Field Officers can access incidents."
             )
 
+    def _require_manager(self, user, action: str) -> None:
+        if self._role(user) not in MANAGER_ROLES:
+            raise PermissionDeniedError(f"Only a Water Quality Officer can {action}.")
+
     def _can_work_on(self, user, incident) -> bool:
-        if self._role(user) == ADMIN_ROLE:
-            return True
         return self._role(user) == FIELD_ROLE and incident.assigned_to == user.user_id
 
     def _load(self, incident_id: UUID):
@@ -95,9 +96,12 @@ class IncidentService:
         return self.repo.create(data)
 
     def get(self, caller, incident_id: UUID):
+        self._require_operational_access(caller)
         incident = self._load(incident_id)
+
         if self._role(caller) == FIELD_ROLE and incident.assigned_to != caller.user_id:
             raise PermissionDeniedError("You can only view incidents assigned to you.")
+
         return incident
 
     def list(
@@ -112,6 +116,8 @@ class IncidentService:
         created_from: Optional[datetime] = None,
         created_to: Optional[datetime] = None,
     ):
+        self._require_operational_access(caller)
+
         if limit < 1 or limit > MAX_LIMIT:
             raise BusinessRuleError(f"limit must be between 1 and {MAX_LIMIT}.")
         if offset < 0:
@@ -132,13 +138,24 @@ class IncidentService:
         )
 
     def update(self, caller, incident_id: UUID, changes: Dict[str, Any]):
+        self._require_operational_access(caller)
         incident = self._load(incident_id)
+
+        if self._role(caller) == FIELD_ROLE and incident.assigned_to != caller.user_id:
+            raise PermissionDeniedError("You can only edit incidents assigned to you.")
+
         self._require_not_closed(incident)
-        if (
-            not self._can_work_on(caller, incident)
-            and self._role(caller) not in MANAGER_ROLES
-        ):
-            raise PermissionDeniedError("You cannot edit this incident.")
+
+        if self._role(caller) == FIELD_ROLE:
+            allowed_field_changes = {
+                "findings",
+                "corrective_action",
+                "visited_at",
+            }
+            if set(changes) - allowed_field_changes:
+                raise PermissionDeniedError(
+                    "Field Officers can only update field notes on assigned incidents."
+                )
 
         if "priority" in changes:
             self._require_manager(caller, "change the priority")
@@ -148,7 +165,7 @@ class IncidentService:
         if notes_changed:
             if not self._can_work_on(caller, incident):
                 raise PermissionDeniedError(
-                    "Only the assigned Field Officer or an Admin can write field notes."
+                    "Only the assigned Field Officer can write field notes."
                 )
             if incident.status != IncidentStatus.INVESTIGATING:
                 raise BusinessRuleError(
@@ -184,10 +201,12 @@ class IncidentService:
         return self.repo.update(incident, changes)
 
     def submit(self, caller, incident_id: UUID):
+        self._require_operational_access(caller)
         incident = self._load(incident_id)
+
         if not self._can_work_on(caller, incident):
             raise PermissionDeniedError(
-                "Only the assigned Field Officer or an Admin can submit for verification."
+                "Only the assigned Field Officer can submit for verification."
             )
         if incident.status != IncidentStatus.INVESTIGATING:
             raise BusinessRuleError(

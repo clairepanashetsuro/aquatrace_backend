@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from core.errors import application_error_response
+from core.error import AppError as LegacyAppError
 from core.exceptions import ApplicationError
 
 
@@ -33,6 +34,17 @@ async def unexpected_error_handler(
     )
 
 
+async def legacy_app_error_handler(
+    request: Request,
+    exc: LegacyAppError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message},
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApplicationError, application_error_handler)
+    app.add_exception_handler(LegacyAppError, legacy_app_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)

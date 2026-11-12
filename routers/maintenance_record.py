@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from database import get_db
+from dependencies import get_current_user
 from models.maintenance_record import MaintenanceStatus, MaintenanceType
 from schemas.maintenance_record import (
     MaintenanceRecordCreate,
@@ -12,16 +13,18 @@ from schemas.maintenance_record import (
     MaintenanceRecordRead,
     MaintenanceRecordUpdate,
 )
-from services.maintenance_record import MaintenanceRecordService, ensure_can_write
+from services.maintenance_record import (
+    MaintenanceRecordService,
+    ensure_can_read,
+    ensure_can_write,
+)
 
 router = APIRouter(prefix="/maintenance-records", tags=["Maintenance Records"])
 
 
-def get_current_user(
-    x_user_id: uuid.UUID | None = Header(default=None, alias="X-User-Id"),
-    db: Session = Depends(get_db),
-):
-    return MaintenanceRecordService(db).resolve_active_user(x_user_id)
+def require_read_role(current_user=Depends(get_current_user)):
+    ensure_can_read(current_user)
+    return current_user
 
 
 def require_write_role(current_user=Depends(get_current_user)):
@@ -30,7 +33,9 @@ def require_write_role(current_user=Depends(get_current_user)):
 
 
 @router.post(
-    "", response_model=MaintenanceRecordRead, status_code=status.HTTP_201_CREATED
+    "",
+    response_model=MaintenanceRecordRead,
+    status_code=status.HTTP_201_CREATED,
 )
 def create_maintenance_record(
     payload: MaintenanceRecordCreate,
@@ -41,7 +46,9 @@ def create_maintenance_record(
 
 
 @router.get(
-    "", response_model=MaintenanceRecordPage, dependencies=[Depends(get_current_user)]
+    "",
+    response_model=MaintenanceRecordPage,
+    dependencies=[Depends(get_current_user)],
 )
 def list_maintenance_records(
     device_id: uuid.UUID | None = None,
@@ -53,9 +60,11 @@ def list_maintenance_records(
     performed_to: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
+    current_user=Depends(require_read_role),
     db: Session = Depends(get_db),
 ):
     items, total = MaintenanceRecordService(db).list(
+        current_user,
         device_id=device_id,
         incident_id=incident_id,
         performed_by=performed_by,
@@ -66,7 +75,12 @@ def list_maintenance_records(
         limit=limit,
         offset=offset,
     )
-    return MaintenanceRecordPage(items=items, total=total, limit=limit, offset=offset)
+    return MaintenanceRecordPage(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(
@@ -74,15 +88,26 @@ def list_maintenance_records(
     response_model=MaintenanceRecordRead,
     dependencies=[Depends(get_current_user)],
 )
-def get_maintenance_record(maintenance_id: uuid.UUID, db: Session = Depends(get_db)):
-    return MaintenanceRecordService(db).get(maintenance_id)
+def get_maintenance_record(
+    maintenance_id: uuid.UUID,
+    current_user=Depends(require_read_role),
+    db: Session = Depends(get_db),
+):
+    return MaintenanceRecordService(db).get(maintenance_id, current_user)
 
 
-@router.patch("/{maintenance_id}", response_model=MaintenanceRecordRead)
+@router.patch(
+    "/{maintenance_id}",
+    response_model=MaintenanceRecordRead,
+)
 def update_maintenance_record(
     maintenance_id: uuid.UUID,
     payload: MaintenanceRecordUpdate,
     db: Session = Depends(get_db),
     current_user=Depends(require_write_role),
 ):
-    return MaintenanceRecordService(db).update(maintenance_id, payload, current_user)
+    return MaintenanceRecordService(db).update(
+        maintenance_id,
+        payload,
+        current_user,
+    )

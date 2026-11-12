@@ -16,6 +16,7 @@ import models  # noqa: F401
 import routers.lab_test as router_module
 from core.error import register_exception_handlers
 from database import Base, get_db
+from core.security import create_access_token
 from models.incident import Incident
 from models.lab_test import LabTest
 from models.user import User, UserRole
@@ -117,8 +118,11 @@ def people(db_session):
 
 
 @pytest.fixture
-def incident(db_session):
-    return make_incident(db_session)
+def incident(db_session, people):
+    record = make_incident(db_session)
+    record.assigned_to = people["fiona"].user_id
+    db_session.commit()
+    return record
 
 
 @pytest.fixture
@@ -135,7 +139,8 @@ def client(db_session):
 
 
 def as_user(user):
-    return {"X-User-Id": str(user.user_id)}
+    token = create_access_token(str(user.user_id))
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_require_write_role_returns_authorized_user():
@@ -179,13 +184,18 @@ def test_officer_can_log_a_lab_result(client, people, incident):
     assert record["created_at"]
 
 
-def test_every_role_can_log_a_lab_result(client, people, incident):
-    for who in ("fiona", "wanda", "adam"):
+def test_field_officer_and_admin_can_log_a_lab_result(client, people, incident):
+    for who in ("fiona", "adam"):
         record = create(client, people[who], incident, parameter=f"p-{who}")
         assert record["recorded_by"] == str(people[who].user_id)
 
 
-def test_ensure_can_write_rejects_non_admin():
+def test_water_quality_officer_cannot_log_a_lab_result(client, people, incident):
+    response = client.post(URL, json=body(incident), headers=as_user(people["wanda"]))
+    assert response.status_code == 403
+
+
+def test_ensure_can_write_rejects_water_quality_officer():
     from types import SimpleNamespace
 
     import pytest
@@ -193,7 +203,7 @@ def test_ensure_can_write_rejects_non_admin():
     from services.lab_test import ensure_can_write
 
     with pytest.raises(PermissionDeniedError):
-        ensure_can_write(SimpleNamespace(role="Field officer"))
+        ensure_can_write(SimpleNamespace(role="Water Quality Officer"))
 
 
 def test_recorded_by_comes_from_the_caller_not_the_body(client, people, incident):
@@ -322,6 +332,8 @@ def test_list_returns_newest_sample_first(client, people, incident):
 
 def test_list_filters_by_incident(client, people, incident, db_session):
     other = make_incident(db_session)
+    other.assigned_to = people["fiona"].user_id
+    db_session.commit()
     create(client, people["fiona"], incident)
     create(client, people["fiona"], other)
 
@@ -585,17 +597,18 @@ def test_update_unknown_result_returns_404(client, people):
     assert response.status_code == 404
 
 
-def test_missing_user_header_returns_401(client):
+def test_missing_bearer_token_returns_401(client):
     assert client.get(URL).status_code == 401
 
 
 def test_unknown_user_returns_401(client):
-    response = client.get(URL, headers={"X-User-Id": str(uuid.uuid4())})
+    token = create_access_token(str(uuid.uuid4()))
+    response = client.get(URL, headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 401
 
 
-def test_inactive_user_returns_403(client, db_session, people):
+def test_inactive_user_returns_401(client, db_session, people):
     from models.user import UserStatus
 
     people["fiona"].status = UserStatus.INACTIVE
@@ -603,7 +616,7 @@ def test_inactive_user_returns_403(client, db_session, people):
 
     response = client.get(URL, headers=as_user(people["fiona"]))
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_create_without_header_returns_401(client, incident):

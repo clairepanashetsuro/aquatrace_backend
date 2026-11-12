@@ -16,8 +16,8 @@ from schemas.maintenance_record import (
     MaintenanceRecordUpdate,
 )
 
-ADMIN_ROLE = "admin"
-WRITE_ROLES = {"field_officer", "admin"}
+FIELD_ROLE = "field_officer"
+READ_ROLES = {"field_officer", "water_quality_officer"}
 MAX_LIMIT = 100
 
 
@@ -26,9 +26,18 @@ def get_role_name(user) -> str:
     return raw.strip().lower().replace(" ", "_")
 
 
+def ensure_can_read(user) -> None:
+    if get_role_name(user) not in READ_ROLES:
+        raise PermissionDeniedError(
+            "Only Field Officers and Water Quality Officers can access maintenance records."
+        )
+
+
 def ensure_can_write(user) -> None:
-    if get_role_name(user) not in WRITE_ROLES:
-        raise PermissionDeniedError("Only Field Officers and admins can do this.")
+    if get_role_name(user) != FIELD_ROLE:
+        raise PermissionDeniedError(
+            "Only Field Officers can create or update maintenance records."
+        )
 
 
 def _check_business_rules(status, next_scheduled_date, pre_value, post_value) -> None:
@@ -62,9 +71,21 @@ class MaintenanceRecordService:
         if not self.repo.device_exists(device_id):
             raise NotFoundError("Device not found.")
 
-    def _require_incident(self, incident_id: uuid.UUID) -> None:
-        if not self.repo.incident_exists(incident_id):
+    def _require_incident_access(self, incident_id: uuid.UUID, current_user):
+        incident = self.repo.get_incident(incident_id)
+
+        if incident is None:
             raise NotFoundError("Incident not found.")
+
+        if (
+            get_role_name(current_user) == FIELD_ROLE
+            and incident.assigned_to != current_user.user_id
+        ):
+            raise PermissionDeniedError(
+                "You can only attach maintenance records to incidents assigned to you."
+            )
+
+        return incident
 
     def _get_or_404(self, maintenance_id: uuid.UUID) -> MaintenanceRecord:
         record = self.repo.get(maintenance_id)
@@ -75,9 +96,10 @@ class MaintenanceRecordService:
     def create(
         self, payload: MaintenanceRecordCreate, current_user
     ) -> MaintenanceRecord:
+        ensure_can_write(current_user)
         self._require_device(payload.device_id)
         if payload.incident_id:
-            self._require_incident(payload.incident_id)
+            self._require_incident_access(payload.incident_id, current_user)
         _check_business_rules(
             payload.status,
             payload.next_scheduled_date,
@@ -88,14 +110,38 @@ class MaintenanceRecordService:
             **payload.model_dump(), performed_by=current_user.user_id
         )
 
-    def get(self, maintenance_id: uuid.UUID) -> MaintenanceRecord:
-        return self._get_or_404(maintenance_id)
+    def get(self, maintenance_id: uuid.UUID, current_user) -> MaintenanceRecord:
+        ensure_can_read(current_user)
+        record = self._get_or_404(maintenance_id)
 
-    def list(self, *, limit: int = 20, offset: int = 0, **filters):
+        if (
+            get_role_name(current_user) == FIELD_ROLE
+            and record.performed_by != current_user.user_id
+        ):
+            raise PermissionDeniedError(
+                "You can only view maintenance records you created."
+            )
+
+        return record
+
+    def list(
+        self,
+        current_user,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        **filters,
+    ):
+        ensure_can_read(current_user)
+
         if not 1 <= limit <= MAX_LIMIT:
             raise BusinessRuleError(f"limit must be between 1 and {MAX_LIMIT}.")
         if offset < 0:
             raise BusinessRuleError("offset must be 0 or more.")
+
+        if get_role_name(current_user) == FIELD_ROLE:
+            filters["performed_by"] = current_user.user_id
+
         return self.repo.list(limit=limit, offset=offset, **filters)
 
     def update(
@@ -103,10 +149,9 @@ class MaintenanceRecordService:
     ):
         record = self._get_or_404(maintenance_id)
 
-        if (
-            get_role_name(current_user) != ADMIN_ROLE
-            and record.performed_by != current_user.user_id
-        ):
+        ensure_can_write(current_user)
+
+        if record.performed_by != current_user.user_id:
             raise PermissionDeniedError(
                 "You can only edit maintenance records you created."
             )
@@ -115,8 +160,11 @@ class MaintenanceRecordService:
         for required in ("maintenance_type", "performed_at", "status"):
             if required in changes and changes[required] is None:
                 raise BusinessRuleError(f"{required} cannot be null.")
-        if changes.get("incident_id"):
-            self._require_incident(changes["incident_id"])
+        if changes.get("incident_id") is not None:
+            self._require_incident_access(
+                changes["incident_id"],
+                current_user,
+            )
 
         _check_business_rules(
             changes.get("status", record.status),

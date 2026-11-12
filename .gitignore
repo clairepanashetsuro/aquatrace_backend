@@ -7,42 +7,25 @@ __pycache__/
 coverage.xml
 htmlcov/
 env/
+
 .env
 .env.*
 !.env.example
+
 secrets/
 *.db
 *.sqlite
 *.sqlite3
-.DS_Store
-!.env.example
-.env.example
-scripts/
-secrets/
+*.dump
 aquatrace_db_backup.dump
+
+.DS_Store
 
 # Generated QR codes
 *.png
 *.svg
 
-# Generated MFA QR code
-/aquatrace_mfa_qr.png
-
 # Ignore OAuth-related Alembic migrations
 alembic/versions/*oauth*.py
-create_admin.py
 
-.env
-.env.*
-!.env.example
-secrets/
-aquatrace_db_backup.dump
-aquatrace_mfa_qr.png
-.coverage
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-env/
+create_admin.py

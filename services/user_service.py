@@ -44,6 +44,24 @@ class UserService:
             "offset": offset,
         }
 
+    def list_active_field_officers(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        items = self.users.list_active_field_officers(
+            limit=limit,
+            offset=offset,
+        )
+        total = self.users.count_active_field_officers()
+
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
     def get_user(self, user_id: UUID) -> User:
         user = self.users.get_by_id(user_id)
 

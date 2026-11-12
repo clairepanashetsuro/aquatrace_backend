@@ -4,12 +4,17 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from database import get_db
-from dependencies import get_current_user, require_admin
+from dependencies import (
+    get_current_user,
+    require_admin,
+    require_water_quality_officer,
+)
 from models.user import User, UserStatus
 from schemas.user import (
     AdminRegister,
     PasswordResetRequest,
     UserCreate,
+    FieldOfficerListResponse,
     UserListResponse,
     UserResponse,
     UserSelfUpdate,
@@ -91,6 +96,22 @@ def create_user(
     db: Session = Depends(get_db),
 ) -> User:
     return UserService(db).create_user(payload, actor, _client_ip(request))
+
+
+@router.get(
+    "/field-officers",
+    response_model=FieldOfficerListResponse,
+)
+def list_active_field_officers(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    actor: User = Depends(require_water_quality_officer),
+    db: Session = Depends(get_db),
+) -> dict:
+    return UserService(db).list_active_field_officers(
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{user_id}", response_model=UserResponse)

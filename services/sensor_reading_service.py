@@ -1,4 +1,3 @@
-
 import math
 import uuid
 from datetime import datetime, timezone
@@ -6,19 +5,20 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
+from fastapi import BackgroundTasks
+from models.device import Device
 from models.sensor_reading import SensorReading, SensorStatus, WqiStatus
 from models.wqi_weight import WqiWeight
-from models.device import Device
-from schemas.sensor_reading import SensorReadingCreate
+from repositories.device import DeviceRepository
 from repositories.sensor_reading_repository import (
-    get_reading_by_device_and_message,
     create_reading,
-    get_readings,
-    get_reading_by_id,
     get_latest_reading_per_device,
+    get_reading_by_device_and_message,
+    get_reading_by_id,
+    get_readings,
     get_readings_by_device,
 )
+from schemas.sensor_reading import SensorReadingCreate
 from services import alert_service
 
 
@@ -66,9 +66,7 @@ def normalize_turbidity(turbidity: float) -> float:
 
 def normalize_ec(ec: float) -> float:
     if not math.isfinite(ec) or ec < 0.0:
-        raise ValueError(
-            "Electrical conductivity must be finite and non-negative."
-        )
+        raise ValueError("Electrical conductivity must be finite and non-negative.")
     if ec <= 1000.0:
         return 100.0
     if ec < 1500.0:
@@ -95,26 +93,21 @@ def fetch_active_weights(db: Session) -> dict[str, float]:
     return {record.parameter: record.weight / 100.0 for record in records}
 
 
-def ingest_sensor_reading(
+def _resolve_device(
     db: Session,
     payload: SensorReadingCreate,
-) -> SensorReading:
-    try:
-        device_uuid = uuid.UUID(payload.device_id)
-    except (ValueError, TypeError, AttributeError):
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Device ID '{payload.device_id}' not found. "
-                "Please register the device first."
-            ),
-        ) from None
+) -> Device:
+    devices = DeviceRepository(db)
 
-    device = (
-        db.query(Device)
-        .filter(Device.device_id == device_uuid)
-        .first()
-    )
+    if payload.serial_number is not None:
+        device = devices.get_by_serial(payload.serial_number)
+    else:
+        try:
+            device_uuid = uuid.UUID(payload.device_id)
+        except (ValueError, TypeError, AttributeError):
+            device = None
+        else:
+            device = devices.get_by_id(device_uuid)
 
     if device is None:
         raise HTTPException(
@@ -124,6 +117,17 @@ def ingest_sensor_reading(
                 "Please register the device first."
             ),
         )
+
+    return device
+
+
+def ingest_sensor_reading(
+    db: Session,
+    payload: SensorReadingCreate,
+    background_tasks: BackgroundTasks | None = None,
+) -> SensorReading:
+    device = _resolve_device(db, payload)
+    device_uuid = device.device_id
 
     existing_reading = get_reading_by_device_and_message(
         db,
@@ -144,12 +148,8 @@ def ingest_sensor_reading(
             try:
                 scores = {
                     "ph": normalize_ph(payload.ph),
-                    "temperature": normalize_temperature(
-                        payload.temperature
-                    ),
-                    "turbidity": normalize_turbidity(
-                        payload.turbidity
-                    ),
+                    "temperature": normalize_temperature(payload.temperature),
+                    "turbidity": normalize_turbidity(payload.turbidity),
                     "electrical_conductivity": normalize_ec(
                         payload.electrical_conductivity
                     ),
@@ -161,18 +161,13 @@ def ingest_sensor_reading(
                 ) from exc
 
             wqi_score = round(
-                sum(
-                    scores[parameter] * weights[parameter]
-                    for parameter in PARAMETERS
-                ),
+                sum(scores[parameter] * weights[parameter] for parameter in PARAMETERS),
                 2,
             )
             wqi_status = assign_wqi_status(wqi_score)
 
     now = datetime.now(timezone.utc)
-    is_buffered = (
-        now - payload.recorded_at
-    ).total_seconds() > 300
+    is_buffered = (now - payload.recorded_at).total_seconds() > 300
 
     reading_data = {
         "device_id": device_uuid,
@@ -192,8 +187,19 @@ def ingest_sensor_reading(
         new_reading = create_reading(db, reading_data)
         db.commit()
         db.refresh(new_reading)
+
     except IntegrityError as exc:
         db.rollback()
+
+        existing_reading = get_reading_by_device_and_message(
+            db,
+            device_uuid,
+            payload.message_number,
+        )
+
+        if existing_reading:
+            return existing_reading
+
         raise HTTPException(
             status_code=404,
             detail=(
@@ -202,7 +208,17 @@ def ingest_sensor_reading(
             ),
         ) from exc
 
-    alert_service.process_new_reading(db, new_reading.reading_id)
+    if background_tasks is not None:
+        alert_service.process_new_reading(
+            db=db,
+            reading_id=new_reading.reading_id,
+            background_tasks=background_tasks,
+        )
+    else:
+        alert_service.process_new_reading(
+            db=db,
+            reading_id=new_reading.reading_id,
+        )
 
     return new_reading
 
@@ -239,9 +255,7 @@ def find_sensor_reading(
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Sensor reading with ID '{reading_id}' not found."
-            ),
+            detail=f"Sensor reading with ID '{reading_id}' not found.",
         ) from None
 
     reading = get_reading_by_id(

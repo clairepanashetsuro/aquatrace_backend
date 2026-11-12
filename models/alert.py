@@ -1,4 +1,3 @@
-
 from enum import Enum as PyEnum
 from uuid import uuid4
 

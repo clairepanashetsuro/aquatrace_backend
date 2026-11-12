@@ -21,7 +21,7 @@ class AlertResponse(BaseModel):
     status: AlertStatus
     occurrence_count: int
     device_serial_number: str
-    location_name: str
+    location_name: str | None = None
     ai_explanation: str | None
     ai_generated_at: datetime | None
     officers_notified_at: datetime | None

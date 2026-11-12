@@ -1,7 +1,7 @@
-
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
+import json
 
 import pytest
 
@@ -79,8 +79,7 @@ def test_build_alert_context_records_missing_reading(monkeypatch):
 
     assert context.reading is None
     assert any(
-        "no linked sensor reading" in item
-        for item in context.missing_information
+        "no linked sensor reading" in item for item in context.missing_information
     )
 
 
@@ -93,8 +92,7 @@ def test_build_alert_context_rejects_reading_from_another_device(monkeypatch):
 
     assert context.reading is None
     assert any(
-        "does not match this device" in item
-        for item in context.missing_information
+        "does not match this device" in item for item in context.missing_information
     )
 
 
@@ -106,10 +104,7 @@ def test_build_alert_context_excludes_non_finite_measurements(monkeypatch):
     context = rag_service.build_alert_context(None, alert.alert_id)
 
     assert context.reading is None
-    assert any(
-        "non-finite measurement" in item
-        for item in context.missing_information
-    )
+    assert any("non-finite measurement" in item for item in context.missing_information)
 
 
 def test_build_alert_context_raises_for_missing_alert(monkeypatch):
@@ -132,7 +127,7 @@ def test_parse_explanation_payload_accepts_json():
 
 
 def test_parse_explanation_payload_accepts_fenced_json():
-    payload = '''```json
+    payload = """```json
 {
   "what_changed": "Turbidity alert",
   "evidence_used": [],
@@ -140,7 +135,7 @@ def test_parse_explanation_payload_accepts_fenced_json():
   "ideas_to_check": [],
   "missing_information": []
 }
-```'''
+```"""
 
     result = rag_service._parse_explanation_payload(payload)
 
@@ -225,16 +220,16 @@ def configure_mock_gemini(monkeypatch, interaction=None, error=None):
             raise error
         return interaction
 
-    client = SimpleNamespace(
-        interactions=SimpleNamespace(create=create)
-    )
+    client = SimpleNamespace(interactions=SimpleNamespace(create=create))
     monkeypatch.setattr(rag_service.genai, "Client", lambda **kwargs: client)
 
 
 def test_generate_alert_explanation_returns_valid_response(monkeypatch):
     from schemas.rag import RAGAlertContext, RAGDeviceContext
+    from core.config import settings
 
-    alert, device, reading = make_context_objects()
+    alert, device, _ = make_context_objects()
+
     monkeypatch.setattr(
         rag_service,
         "build_alert_context",
@@ -262,7 +257,6 @@ def test_generate_alert_explanation_returns_valid_response(monkeypatch):
             missing_information=[],
         ),
     )
-    from core.config import settings
 
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(settings, "gemini_file_search_store_name", "test-store")
@@ -277,11 +271,27 @@ def test_generate_alert_explanation_returns_valid_response(monkeypatch):
         steps=[],
     )
     client = SimpleNamespace(
-        interactions=SimpleNamespace(
-            create=lambda **kwargs: response
-        )
+        interactions=SimpleNamespace(create=lambda **kwargs: response)
     )
     monkeypatch.setattr(rag_service.genai, "Client", lambda **kwargs: client)
+
+    saved = {}
+
+    def mock_save_alert_explanation(
+        db,
+        alert_id,
+        explanation,
+        generated_at,
+    ):
+        saved["alert_id"] = alert_id
+        saved["explanation"] = explanation
+        saved["generated_at"] = generated_at
+
+    monkeypatch.setattr(
+        rag_service,
+        "save_alert_explanation",
+        mock_save_alert_explanation,
+    )
 
     result = rag_service.generate_alert_explanation(None, alert.alert_id)
 
@@ -292,6 +302,13 @@ def test_generate_alert_explanation_returns_valid_response(monkeypatch):
     assert alert.severity == "warning"
     assert alert.status == "triggered"
 
+    assert saved["alert_id"] == alert.alert_id
+    assert saved["generated_at"] is not None
+
+    saved_explanation = json.loads(saved["explanation"])
+    assert saved_explanation["what_changed"] == "pH alert"
+    assert saved_explanation["alert_id"] == str(alert.alert_id)
+
 
 def test_generate_alert_explanation_rejects_missing_api_key(monkeypatch):
     from core.config import settings
@@ -301,7 +318,9 @@ def test_generate_alert_explanation_rejects_missing_api_key(monkeypatch):
     monkeypatch.setattr(
         rag_service,
         "build_alert_context",
-        lambda db, alert_id: SimpleNamespace(alert=SimpleNamespace(alert_id=alert.alert_id)),
+        lambda db, alert_id: SimpleNamespace(
+            alert=SimpleNamespace(alert_id=alert.alert_id)
+        ),
     )
     monkeypatch.setattr(settings, "gemini_api_key", None)
 
@@ -311,6 +330,7 @@ def test_generate_alert_explanation_rejects_missing_api_key(monkeypatch):
 
 def test_generate_alert_explanation_handles_gemini_failure(monkeypatch):
     from core.exceptions import ServiceUnavailableError
+    from core.config import settings
 
     alert, _, _ = make_context_objects()
     context = SimpleNamespace(
@@ -323,9 +343,9 @@ def test_generate_alert_explanation_handles_gemini_failure(monkeypatch):
         missing_information=[],
         model_dump_json=lambda: "{}",
     )
-    monkeypatch.setattr(rag_service, "build_alert_context", lambda db, alert_id: context)
-    from core.config import settings
-
+    monkeypatch.setattr(
+        rag_service, "build_alert_context", lambda db, alert_id: context
+    )
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(settings, "gemini_file_search_store_name", "test-store")
     monkeypatch.setattr(
@@ -344,6 +364,7 @@ def test_generate_alert_explanation_handles_gemini_failure(monkeypatch):
 
 def test_generate_alert_explanation_rejects_invalid_json(monkeypatch):
     from core.exceptions import ServiceUnavailableError
+    from core.config import settings
 
     alert, _, _ = make_context_objects()
     context = SimpleNamespace(
@@ -356,9 +377,9 @@ def test_generate_alert_explanation_rejects_invalid_json(monkeypatch):
         missing_information=[],
         model_dump_json=lambda: "{}",
     )
-    monkeypatch.setattr(rag_service, "build_alert_context", lambda db, alert_id: context)
-    from core.config import settings
-
+    monkeypatch.setattr(
+        rag_service, "build_alert_context", lambda db, alert_id: context
+    )
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(settings, "gemini_file_search_store_name", "test-store")
     monkeypatch.setattr(
@@ -394,7 +415,9 @@ def test_generate_alert_explanation_rejects_incomplete_interaction(monkeypatch):
         missing_information=[],
         model_dump_json=lambda: "{}",
     )
-    monkeypatch.setattr(rag_service, "build_alert_context", lambda db, alert_id: context)
+    monkeypatch.setattr(
+        rag_service, "build_alert_context", lambda db, alert_id: context
+    )
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(settings, "gemini_file_search_store_name", "test-store")
     monkeypatch.setattr(

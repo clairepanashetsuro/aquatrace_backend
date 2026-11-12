@@ -1,7 +1,7 @@
 [project]
-name = "Your-Project-Title"
+name = "aquatrace-backend"
 version = "0.1.0"
-description = "Your Project Description"
+description = "AquaTrace FastAPI backend for water-quality monitoring and incident management"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",

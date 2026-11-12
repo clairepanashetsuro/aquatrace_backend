@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -8,20 +9,18 @@ from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from core.error import register_exception_handlers
-import routers.maintenance_record as router_module
-from database import Base, get_db
-from models.device import Device
-from models.incident import Incident
-from models.maintenance_record import MaintenanceRecord
-from models.user import User, UserRole, UserStatus
-from types import SimpleNamespace
 
 from core.error import (
     PermissionDeniedError,
     UnauthenticatedError,
+    register_exception_handlers,
 )
-
+import routers.maintenance_record as router_module
+from database import Base, get_db
+from models.device import Device
+from models.incident import Incident, IncidentPriority
+from models.maintenance_record import MaintenanceRecord
+from models.user import User, UserRole, UserStatus
 from services.maintenance_record import MaintenanceRecordService
 
 
@@ -124,6 +123,17 @@ def api(db_session):
     return Api(TestClient(app), holder)
 
 
+def make_incident(db_session, assigned_to=None):
+    incident = Incident(
+        alert_id=uuid.uuid4(),
+        assigned_to=assigned_to,
+        priority=IncidentPriority.HIGH,
+    )
+    db_session.add(incident)
+    db_session.commit()
+    return incident
+
+
 def body(device, **overrides):
     data = {
         "device_id": str(device.device_id),
@@ -146,12 +156,11 @@ def create(api, user, device, **overrides):
 def test_update_record_success(db_session, people, device):
     from datetime import datetime, timezone
 
+    from models.maintenance_record import MaintenanceStatus, MaintenanceType
     from schemas.maintenance_record import (
         MaintenanceRecordCreate,
         MaintenanceRecordUpdate,
     )
-    from services.maintenance_record import MaintenanceRecordService
-    from models.maintenance_record import MaintenanceStatus, MaintenanceType
 
     fiona = people["fiona"]
     service = MaintenanceRecordService(db_session)
@@ -196,32 +205,28 @@ def test_performed_by_comes_from_login_not_request_body(api, people, device):
     assert record["performed_by"] == str(people["fiona"].user_id)
 
 
-def test_get_current_user_resolves_user(monkeypatch):
-    import uuid
-    import routers.maintenance_record as router_module
+def test_maintenance_list_requires_authentication(db_session):
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router_module.router)
 
-    user_id = uuid.uuid4()
-    expected_user = object()
+    def override_db():
+        yield db_session
 
-    class FakeService:
-        def __init__(self, db):
-            pass
+    app.dependency_overrides[get_db] = override_db
 
-        def resolve_active_user(self, supplied_id):
-            assert supplied_id == user_id
-            return expected_user
+    client = TestClient(app)
+    response = client.get(URL)
 
-    monkeypatch.setattr(router_module, "MaintenanceRecordService", FakeService)
+    assert response.status_code == 401
 
-    assert (
-        router_module.get_current_user(x_user_id=user_id, db=object()) is expected_user
+
+def test_admin_cannot_create_record(api, people, device):
+    response = api.login(people["adam"]).post(
+        URL, json=body(device, maintenance_type="repair")
     )
 
-
-def test_admin_can_create_record(api, people, device):
-    record = create(api, people["adam"], device, maintenance_type="repair")
-
-    assert record["performed_by"] == str(people["adam"].user_id)
+    assert response.status_code == 403
 
 
 def test_water_quality_officer_cannot_create(api, people, device):
@@ -246,6 +251,48 @@ def test_create_with_unknown_incident_returns_404(api, people, device):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Incident not found."
+
+
+def test_field_officer_can_create_maintenance_for_assigned_incident(
+    api, people, device, db_session
+):
+    incident = make_incident(db_session, people["fiona"].user_id)
+
+    record = create(
+        api,
+        people["fiona"],
+        device,
+        incident_id=str(incident.incident_id),
+    )
+
+    assert record["incident_id"] == str(incident.incident_id)
+
+
+def test_field_officer_cannot_create_maintenance_for_another_officers_incident(
+    api, people, device, db_session
+):
+    incident = make_incident(db_session, people["felix"].user_id)
+
+    response = api.login(people["fiona"]).post(
+        URL,
+        json=body(device, incident_id=str(incident.incident_id)),
+    )
+
+    assert response.status_code == 403
+
+
+def test_field_officer_cannot_attach_another_officers_incident(
+    api, people, device, db_session
+):
+    record = create(api, people["fiona"], device)
+    incident = make_incident(db_session, people["felix"].user_id)
+
+    response = api.login(people["fiona"]).patch(
+        f"{URL}/{record['maintenance_id']}",
+        json={"incident_id": str(incident.incident_id)},
+    )
+
+    assert response.status_code == 403
 
 
 def test_update_with_unknown_incident_returns_404(api, people, device):
@@ -315,13 +362,26 @@ def test_scheduled_record_cannot_carry_readings(api, people, device):
     assert response.status_code == 422
 
 
-def test_any_signed_in_role_can_list(api, people, device):
-    create(api, people["fiona"], device)
+def test_maintenance_list_respects_role_permissions(api, people, device):
+    create(api, people["fiona"], device, notes="Fiona's record")
+    create(api, people["felix"], device, notes="Felix's record")
 
-    for who in ("fiona", "wanda", "adam"):
-        response = api.login(people[who]).get(URL)
-        assert response.status_code == 200
-        assert response.json()["total"] == 1
+    response = api.login(people["wanda"]).get(URL)
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+
+    response = api.login(people["fiona"]).get(URL)
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["notes"] == "Fiona's record"
+
+    response = api.login(people["felix"]).get(URL)
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["notes"] == "Felix's record"
+
+    response = api.login(people["adam"]).get(URL)
+    assert response.status_code == 403
 
 
 def test_list_filters_by_type_and_device(api, people, device):
@@ -339,7 +399,12 @@ def test_list_filters_by_type_and_device(api, people, device):
 
 def test_list_is_paginated_and_newest_first(api, people, device):
     for day in (10, 11, 12):
-        create(api, people["fiona"], device, performed_at=f"2026-10-{day}T10:00:00Z")
+        create(
+            api,
+            people["fiona"],
+            device,
+            performed_at=f"2026-10-{day}T10:00:00Z",
+        )
     client = api.login(people["wanda"])
 
     page = client.get(URL, params={"limit": 2, "offset": 0}).json()
@@ -425,28 +490,37 @@ def test_other_field_officer_cannot_update(api, people, device):
     record = create(api, people["fiona"], device)
 
     response = api.login(people["felix"]).patch(
-        f"{URL}/{record['maintenance_id']}", json={"notes": "Not mine"}
+        f"{URL}/{record['maintenance_id']}",
+        json={"notes": "Not mine"},
     )
 
     assert response.status_code == 403
 
 
-def test_admin_can_update_any_record(api, people, device):
+def test_admin_cannot_update_record(api, people, device):
     record = create(api, people["fiona"], device)
 
     response = api.login(people["adam"]).patch(
-        f"{URL}/{record['maintenance_id']}", json={"status": "failed"}
+        f"{URL}/{record['maintenance_id']}",
+        json={"status": "failed"},
     )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "failed"
+    assert response.status_code == 403
+
+    unchanged_record = api.login(people["fiona"]).get(
+        f"{URL}/{record['maintenance_id']}"
+    )
+
+    assert unchanged_record.status_code == 200
+    assert unchanged_record.json()["status"] == record["status"]
 
 
 def test_water_quality_officer_cannot_update(api, people, device):
     record = create(api, people["fiona"], device)
 
     response = api.login(people["wanda"]).patch(
-        f"{URL}/{record['maintenance_id']}", json={"notes": "No"}
+        f"{URL}/{record['maintenance_id']}",
+        json={"notes": "No"},
     )
 
     assert response.status_code == 403
@@ -479,15 +553,18 @@ def test_update_to_scheduled_needs_a_date_and_no_readings(api, people, device):
     record = create(api, people["fiona"], device)
 
     response = api.login(people["fiona"]).patch(
-        f"{URL}/{record['maintenance_id']}", json={"status": "scheduled"}
+        f"{URL}/{record['maintenance_id']}",
+        json={"status": "scheduled"},
     )
 
     assert response.status_code == 422
 
 
 def test_update_unknown_record_returns_404(api, people):
-    response = api.login(people["adam"]).patch(
-        f"{URL}/{uuid.uuid4()}", json={"notes": "x"}
+
+    response = api.login(people["fiona"]).patch(
+        f"{URL}/{uuid.uuid4()}",
+        json={"notes": "x"},
     )
 
     assert response.status_code == 404

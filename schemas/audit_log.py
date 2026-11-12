@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from ipaddress import IPv4Address, IPv6Address
 
 
 class AuditLogRead(BaseModel):
@@ -13,7 +14,7 @@ class AuditLogRead(BaseModel):
     action: str
     entity_type: str | None
     entity_id: uuid.UUID | None
-    ip_address: str | None
+    ip_address: IPv4Address | IPv6Address | None = None
     details: dict[str, Any] | None
     created_at: datetime
 

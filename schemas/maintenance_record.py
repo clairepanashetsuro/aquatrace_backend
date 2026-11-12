@@ -48,8 +48,8 @@ class DeviceSummary(BaseModel):
 
     device_id: uuid.UUID
     serial_number: str
-    latitude: float
-    longitude: float
+    latitude: float | None = None
+    longitude: float | None = None
     address: str | None = None
     name: str | None = None
 

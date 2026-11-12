@@ -34,9 +34,12 @@ class MaintenanceRecordRepository:
         device_cls = MaintenanceRecord.device.property.mapper.class_
         return self.db.get(device_cls, device_id) is not None
 
-    def incident_exists(self, incident_id: uuid.UUID) -> bool:
+    def get_incident(self, incident_id: uuid.UUID):
         incident_cls = MaintenanceRecord.incident.property.mapper.class_
-        return self.db.get(incident_cls, incident_id) is not None
+        return self.db.get(incident_cls, incident_id)
+
+    def incident_exists(self, incident_id: uuid.UUID) -> bool:
+        return self.get_incident(incident_id) is not None
 
     def create(self, **data: Any) -> MaintenanceRecord:
         record = MaintenanceRecord(**data)

@@ -1,11 +1,15 @@
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from uuid import UUID
 from models.sensor_reading import WqiStatus, SensorStatus
 
 
 class SensorReadingCreate(BaseModel):
-    device_id: str = Field(..., description="The UUID of the registered device")
+    device_id: str | None = Field(
+        default=None, description="The UUID of the registered device"
+    )
+    serial_number: str | None = Field(default=None, min_length=1, max_length=50)
+
     message_number: int = Field(..., ge=1)
     ph: float = Field(..., ge=0, le=14)
     temperature: float
@@ -14,6 +18,12 @@ class SensorReadingCreate(BaseModel):
 
     recorded_at: datetime
     sensor_status: SensorStatus = SensorStatus.OK
+
+    @model_validator(mode="after")
+    def require_exactly_one_identifier(self):
+        if (self.device_id is None) == (self.serial_number is None):
+            raise ValueError("Provide exactly one of device_id or serial_number.")
+        return self
 
 
 class SensorReadingResponse(BaseModel):

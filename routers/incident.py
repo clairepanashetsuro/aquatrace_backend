@@ -2,10 +2,11 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from database import get_db
+from dependencies import get_current_user
 from models.incident import IncidentPriority, IncidentStatus
 from repositories.incident import IncidentRepository
 from schemas.incident import (
@@ -22,13 +23,6 @@ router = APIRouter(prefix="/incidents", tags=["incidents"])
 
 def get_service(db: Session = Depends(get_db)) -> IncidentService:
     return IncidentService(IncidentRepository(db))
-
-
-def get_current_user(
-    x_user_id: Optional[UUID] = Header(default=None, alias="X-User-Id"),
-    service: IncidentService = Depends(get_service),
-):
-    return service.resolve_active_user(x_user_id)
 
 
 @router.post("", response_model=IncidentRead, status_code=status.HTTP_201_CREATED)

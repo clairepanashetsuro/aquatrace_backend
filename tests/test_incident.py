@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
 from core.error import (
@@ -183,20 +183,28 @@ def test_assign_blocked_while_awaiting_verification(world):
 
 def test_field_notes_only_by_assignee(world):
     inc = new_incident(world)
+
     with pytest.raises(PermissionDeniedError):
         world.svc.update(world.other_field, inc.incident_id, {"findings": "x"})
+
     with pytest.raises(PermissionDeniedError):
         world.svc.update(world.wqo, inc.incident_id, {"findings": "x"})
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.update(world.admin, inc.incident_id, {"findings": "x"})
+
     assert (
-        world.svc.update(world.admin, inc.incident_id, {"findings": "x"}).findings
+        world.svc.update(world.field, inc.incident_id, {"findings": "x"}).findings
         == "x"
     )
 
 
 def test_notes_need_investigating_status(world):
-    inc = new_incident(world, assign=False)
+    inc = new_incident(world)
+    inc.status = S.OPEN
+
     with pytest.raises(BusinessRuleError):
-        world.svc.update(world.admin, inc.incident_id, {"findings": "x"})
+        world.svc.update(world.field, inc.incident_id, {"findings": "x"})
 
 
 def test_visited_at_not_in_future(world):
@@ -265,7 +273,7 @@ def test_closed_incident_is_read_only(world):
     inc = ready_for_review(world)
     world.svc.close(world.wqo, inc.incident_id)
     with pytest.raises(BusinessRuleError):
-        world.svc.update(world.admin, inc.incident_id, {"findings": "late"})
+        world.svc.update(world.wqo, inc.incident_id, {"findings": "late"})
     with pytest.raises(BusinessRuleError):
         world.svc.assign(world.wqo, inc.incident_id, world.field.user_id)
 
@@ -292,6 +300,37 @@ def test_field_officer_sees_only_own(world):
     assert world.svc.get(world.wqo, other.incident_id) is other
 
 
+def test_admin_has_no_operational_incident_access(world):
+    inc = new_incident(world)
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.create(
+            world.admin,
+            {"alert_id": world.alert, "priority": P.LOW},
+        )
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.get(world.admin, inc.incident_id)
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.list(world.admin)
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.update(world.admin, inc.incident_id, {"priority": P.LOW})
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.assign(world.admin, inc.incident_id, world.field.user_id)
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.submit(world.admin, inc.incident_id)
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.reopen(world.admin, inc.incident_id)
+
+    with pytest.raises(PermissionDeniedError):
+        world.svc.close(world.admin, inc.incident_id)
+
+
 @pytest.mark.parametrize(
     "kw",
     [
@@ -312,6 +351,24 @@ def client(world):
     register_exception_handlers(app)
     app.include_router(router_module.router)
     app.dependency_overrides[router_module.get_service] = lambda: world.svc
+
+    def test_current_user(
+        x_user_id: UUID | None = Header(default=None, alias="X-User-Id"),
+    ):
+        if x_user_id is None:
+            raise HTTPException(status_code=401, detail="Missing test user")
+
+        user = world.repo.get_user_by_id(x_user_id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Unknown test user")
+
+        user_status = str(getattr(user.status, "value", user.status)).strip().lower()
+        if user_status != "active":
+            raise HTTPException(status_code=401, detail="Inactive test user")
+
+        return user
+
+    app.dependency_overrides[router_module.get_current_user] = test_current_user
     return TestClient(app)
 
 
@@ -363,6 +420,24 @@ def test_router_full_flow(client, world):
     assert (
         client.get("/incidents?status=closed", headers=h(world.wqo)).json()["total"]
         == 1
+    )
+
+
+def test_router_denies_administrator_operational_access(client, world):
+    inc = new_incident(world)
+    headers = h(world.admin)
+
+    assert client.get("/incidents", headers=headers).status_code == 403
+    assert (
+        client.get(f"/incidents/{inc.incident_id}", headers=headers).status_code == 403
+    )
+    assert (
+        client.patch(
+            f"/incidents/{inc.incident_id}",
+            json={"priority": "low"},
+            headers=headers,
+        ).status_code
+        == 403
     )
 
 

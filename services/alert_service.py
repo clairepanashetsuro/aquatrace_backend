@@ -2,18 +2,30 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-
+from fastapi import BackgroundTasks
 from models.alert import Alert, AlertStatus, SeverityLevel
 from repositories import alert_repository
 from schemas.alert import AlertSeenUpdate, AlertResolveUpdate
-from services import alert_rules
+from services import alert_rules, rag_service
 
 
-def process_new_reading(db: Session, reading_id: UUID) -> None:
+def process_new_reading(
+    db: Session,
+    reading_id: UUID,
+    background_tasks: BackgroundTasks,
+) -> None:
     reading = alert_repository.get_sensor_reading(db, reading_id)
 
-    if reading is not None:
-        alert_rules.evaluate_reading(db, reading)
+    if reading is None:
+        return
+
+    new_alerts = alert_rules.evaluate_reading(db, reading)
+
+    for alert in new_alerts:
+        background_tasks.add_task(
+            rag_service.generate_and_save_alert_explanation,
+            alert.alert_id,
+        )
 
 
 def list_alerts(

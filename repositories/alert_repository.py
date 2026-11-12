@@ -148,3 +148,23 @@ def mark_officers_notified(db: Session, alert: Alert) -> Alert:
     db.commit()
     db.refresh(alert)
     return alert
+
+
+def save_alert_explanation(
+    db: Session,
+    alert_id: UUID,
+    explanation: str,
+    generated_at: datetime,
+) -> Alert | None:
+    alert = get_alert(db, alert_id)
+
+    if alert is None:
+        return None
+
+    alert.ai_explanation = explanation
+    alert.ai_generated_at = generated_at
+
+    db.commit()
+    db.refresh(alert)
+
+    return alert

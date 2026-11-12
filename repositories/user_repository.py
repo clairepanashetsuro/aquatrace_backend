@@ -54,6 +54,34 @@ class UserRepository:
         statement = select(func.count()).select_from(User).where(User.status == status)
         return self.db.scalar(statement) or 0
 
+    def list_active_field_officers(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[User]:
+        statement = (
+            select(User)
+            .where(
+                User.role == UserRole.FIELD_OFFICER,
+                User.status == UserStatus.ACTIVE,
+            )
+            .order_by(User.first_name, User.last_name, User.user_id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(self.db.scalars(statement).all())
+
+    def count_active_field_officers(self) -> int:
+        statement = (
+            select(func.count())
+            .select_from(User)
+            .where(
+                User.role == UserRole.FIELD_OFFICER,
+                User.status == UserStatus.ACTIVE,
+            )
+        )
+        return self.db.scalar(statement) or 0
+
     def count_active_admins(self) -> int:
         statement = (
             select(func.count())
