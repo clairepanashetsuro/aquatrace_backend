@@ -1,3 +1,4 @@
+
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace as NS
 from uuid import UUID, uuid4
@@ -27,6 +28,7 @@ def make_user(role, status="Active"):
 class FakeRepo:
     def __init__(self):
         self.users, self.alerts, self.incidents = {}, set(), {}
+        self.alert_statuses = {}
 
     def add_user(self, user):
         self.users[user.user_id] = user
@@ -66,6 +68,12 @@ class FakeRepo:
     def update(self, incident, data):
         for k, v in data.items():
             setattr(incident, k, v)
+        return incident
+
+    def close(self, incident, data):
+        for key, value in data.items():
+            setattr(incident, key, value)
+        self.alert_statuses[incident.alert_id] = AlertStatus.RESOLVED
         return incident
 
     def list(self, limit, offset, status, priority, assigned_to, alert_id, cf, ct):
@@ -257,6 +265,7 @@ def test_reopen_and_close_flow(world):
     closed = world.svc.close(world.wqo, inc.incident_id)
     assert closed.status == S.CLOSED
     assert closed.resolved_by == world.wqo.user_id and closed.closed_at is not None
+    assert world.repo.alert_statuses[inc.alert_id] == AlertStatus.RESOLVED
 
 
 def test_close_rules(world):
@@ -513,9 +522,7 @@ def test_router_denies_administrator_operational_access(client, world):
     headers = h(world.admin)
 
     assert client.get("/incidents", headers=headers).status_code == 403
-    assert (
-        client.get(f"/incidents/{inc.incident_id}", headers=headers).status_code == 403
-    )
+    assert client.get(f"/incidents/{inc.incident_id}", headers=headers).status_code == 403
     assert (
         client.patch(
             f"/incidents/{inc.incident_id}",

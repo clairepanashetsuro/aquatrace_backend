@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -5,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from models.alert import AlertStatus
 from models.incident import Incident
 
 
@@ -53,6 +55,17 @@ class IncidentRepository:
         self.db.commit()
         return self.get(incident.incident_id)
 
+    def close(self, incident: Incident, data: Dict[str, Any]) -> Incident:
+        for key, value in data.items():
+            setattr(incident, key, value)
+
+        alert = self.db.get(Alert, incident.alert_id)
+        if alert is not None:
+            alert.status = AlertStatus.RESOLVED
+
+        self.db.commit()
+        return self.get(incident.incident_id)
+
     def list(
         self,
         limit: int,
@@ -81,6 +94,7 @@ class IncidentRepository:
         total = self.db.execute(
             select(func.count()).select_from(Incident).where(*conditions)
         ).scalar_one()
+
         stmt = (
             select(Incident)
             .where(*conditions)
