@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.device import Device, DeviceStatus
@@ -48,20 +48,6 @@ class DeviceRepository:
             self.db.add(device)
             self.db.commit()
             self.db.refresh(device)
-            return device
-        except Exception:
-            self.db.rollback()
-            raise
-
-    def delete_by_id(self, device_id: UUID) -> Device | None:
-        device = self.get_by_id(device_id)
-
-        if device is None:
-            return None
-
-        try:
-            self.db.execute(delete(Device).where(Device.device_id == device_id))
-            self.db.commit()
             return device
         except Exception:
             self.db.rollback()

@@ -272,4 +272,13 @@ class DeviceService:
                 detail="Device not found",
             )
 
-        self.devices.delete_by_id(device_id)
+        if device.status == DeviceStatus.INACTIVE:
+            raise HTTPException(
+                status_code=409,
+                detail="Device is already inactive",
+            )
+
+        device.status = DeviceStatus.INACTIVE
+        device.revoked_at = None
+
+        self.devices.update(device)

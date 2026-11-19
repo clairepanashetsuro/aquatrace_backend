@@ -473,7 +473,8 @@ class TestDeviceRouter:
         assert response.status_code == 204
 
         response = client.get(f"/api/v1/devices/{device.device_id}")
-        assert response.status_code == 404
+        assert response.status_code == 200
+        assert response.json()["status"] == "inactive"
 
     def test_delete_device_not_found(self, db_session, client):
         user = _make_user(db_session)
