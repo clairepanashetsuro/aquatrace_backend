@@ -53,7 +53,7 @@ class Settings(BaseSettings):
         default=PROJECT_ROOT / "secrets" / "jwt-public.pem"
     )
 
-    jwt_access_token_minutes: int = Field(default=30, ge=1, le=1440)
+    jwt_access_token_minutes: int = Field(default=1440, ge=1, le=1440)
     jwt_refresh_token_days: int = Field(default=1, ge=1, le=90)
 
     jwt_issuer: str = "aquatrace-api"
